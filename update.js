@@ -17,10 +17,12 @@ const NAME_MAP = {
   "Mexico":                    "Mexico",
   "South Africa":              "South Africa",
   "Korea Republic":            "South Korea",
+  "South Korea":               "South Korea",
   "Czechia":                   "Czechia",
   "Czech Republic":            "Czechia",
   "Canada":                    "Canada",
   "Bosnia and Herzegovina":    "Bosnia and H'",
+  "Bosnia and H'":             "Bosnia and H'",
   "Qatar":                     "Qatar",
   "Switzerland":               "Switzerland",
   "Brazil":                    "Brazil",
@@ -50,6 +52,7 @@ const NAME_MAP = {
   "New Zealand":               "New Zealand",
   "Spain":                     "Spain",
   "Cape Verde":                "Cape Verde",
+  "Cabo Verde":                "Cape Verde",
   "Saudi Arabia":              "Saudi Arabia",
   "Uruguay":                   "Uruguay",
   "France":                    "France",
@@ -118,15 +121,18 @@ function firebasePut(path, data) {
 
 // ── Round reached mapping ─────────────────────────────────────
 // football-data.org stage names → rounds reached count
+// NOTE: Group stage does NOT count as a "round reached" for fantasy
+// points — that bonus only applies once a team progresses to the
+// knockout stages (Round of 32 onwards).
 function stageToRounds(stage) {
   const map = {
-    "GROUP_STAGE":          1,
-    "LAST_32":              2,
-    "LAST_16":              3,
-    "QUARTER_FINALS":       4,
-    "SEMI_FINALS":          5,
-    "THIRD_PLACE":          5,
-    "FINAL":                6,
+    "GROUP_STAGE":          0,
+    "LAST_32":              1,
+    "LAST_16":              2,
+    "QUARTER_FINALS":       3,
+    "SEMI_FINALS":          4,
+    "THIRD_PLACE":          4,
+    "FINAL":                5,
   };
   return map[stage] || 0;
 }
@@ -227,8 +233,6 @@ async function main() {
   }
 
   // Get red cards from match details (bookings)
-  // Note: red card data requires match-level detail calls — we'll use a lightweight approach
-  // by checking bookings in match detail if available
   for (const match of matchData.matches) {
     if (match.status !== "FINISHED") continue;
     const bookings = match.bookings || [];
@@ -241,7 +245,7 @@ async function main() {
     }
   }
 
-  // Clean up internal _name field before saving
+  // Clean up internal fields before saving
   for (const key of Object.keys(stats)) {
     delete stats[key]._name;
     delete stats[key].losses;
