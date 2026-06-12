@@ -1,231 +1,266 @@
-// WC 2026 Fantasy — Auto Score Updater
-// Pulls finished matches from football-data.org and writes team stats to Firebase.
+// ============================================================
+//  WC 2026 Fantasy — Auto Score Updater
+//  Runs every 10 minutes via GitHub Actions
+//  Pulls live scores from football-data.org → writes to Firebase
+// ============================================================
 
-const FOOTBALL_API_KEY = process.env.FOOTBALL_API_KEY;
-const FIREBASE_SECRET  = process.env.FIREBASE_SECRET;
-const FIREBASE_URL     = "https://sweepstake-world-cup-default-rtdb.firebaseio.com";
-const COMPETITION_ID   = 2000; // FIFA World Cup
+const https = require("https");
 
-// Maps football-data.org team names -> names used in the app
+// ── Config ───────────────────────────────────────────────────
+const FOOTBALL_API_KEY  = process.env.FOOTBALL_API_KEY;
+const FIREBASE_DB_URL   = "https://sweepstake-world-cup-default-rtdb.firebaseio.com";
+const FIREBASE_SECRET   = process.env.FIREBASE_SECRET;
+const WC_COMPETITION_ID = "2000"; // football-data.org World Cup ID
+
+// ── Team name mapping (football-data.org → your app names) ───
 const NAME_MAP = {
-  "Mexico": "Mexico",
-  "South Africa": "South Africa",
-  "Korea Republic": "South Korea",
-  "South Korea": "South Korea",
-  "Czech Republic": "Czechia",
-  "Czechia": "Czechia",
-  "Canada": "Canada",
-  "Bosnia and Herzegovina": "Bosnia and H'",
-  "Qatar": "Qatar",
-  "Switzerland": "Switzerland",
-  "Brazil": "Brazil",
-  "Morocco": "Morocco",
-  "Haiti": "Haiti",
-  "Scotland": "Scotland",
-  "United States": "USA",
-  "USA": "USA",
-  "Paraguay": "Paraguay",
-  "Australia": "Australia",
-  "Turkey": "Türkiye",
-  "Türkiye": "Türkiye",
-  "Germany": "Germany",
-  "Curacao": "Curaçao",
-  "Curaçao": "Curaçao",
-  "Ivory Coast": "Ivory Coast",
-  "Côte d'Ivoire": "Ivory Coast",
-  "Ecuador": "Ecuador",
-  "Netherlands": "Netherlands",
-  "Japan": "Japan",
-  "Sweden": "Sweden",
-  "Tunisia": "Tunisia",
-  "Belgium": "Belgium",
-  "Egypt": "Egypt",
-  "IR Iran": "Iran",
-  "Iran": "Iran",
-  "New Zealand": "New Zealand",
-  "Spain": "Spain",
-  "Cabo Verde": "Cape Verde",
-  "Cape Verde": "Cape Verde",
-  "Saudi Arabia": "Saudi Arabia",
-  "Uruguay": "Uruguay",
-  "France": "France",
-  "Senegal": "Senegal",
-  "Iraq": "Iraq",
-  "Norway": "Norway",
-  "Argentina": "Argentina",
-  "Algeria": "Algeria",
-  "Austria": "Austria",
-  "Jordan": "Jordan",
-  "Portugal": "Portugal",
-  "DR Congo": "DR Congo",
-  "Congo DR": "DR Congo",
-  "Uzbekistan": "Uzbekistan",
-  "Colombia": "Colombia",
-  "England": "England",
-  "Croatia": "Croatia",
-  "Ghana": "Ghana",
-  "Panama": "Panama",
+  "Mexico":                    "Mexico",
+  "South Africa":              "South Africa",
+  "Korea Republic":            "South Korea",
+  "South Korea":               "South Korea",
+  "Czechia":                   "Czechia",
+  "Czech Republic":            "Czechia",
+  "Canada":                    "Canada",
+  "Bosnia and Herzegovina":    "Bosnia and H'",
+  "Bosnia and H'":             "Bosnia and H'",
+  "Qatar":                     "Qatar",
+  "Switzerland":               "Switzerland",
+  "Brazil":                    "Brazil",
+  "Morocco":                   "Morocco",
+  "Haiti":                     "Haiti",
+  "Scotland":                  "Scotland",
+  "USA":                       "USA",
+  "United States":             "USA",
+  "Paraguay":                  "Paraguay",
+  "Australia":                 "Australia",
+  "Türkiye":                   "Türkiye",
+  "Turkey":                    "Türkiye",
+  "Germany":                   "Germany",
+  "Curaçao":                   "Curaçao",
+  "Curacao":                   "Curaçao",
+  "Ivory Coast":               "Ivory Coast",
+  "Côte d'Ivoire":             "Ivory Coast",
+  "Ecuador":                   "Ecuador",
+  "Netherlands":               "Netherlands",
+  "Japan":                     "Japan",
+  "Sweden":                    "Sweden",
+  "Tunisia":                   "Tunisia",
+  "Belgium":                   "Belgium",
+  "Egypt":                     "Egypt",
+  "Iran":                      "Iran",
+  "IR Iran":                   "Iran",
+  "New Zealand":               "New Zealand",
+  "Spain":                     "Spain",
+  "Cape Verde":                "Cape Verde",
+  "Cabo Verde":                "Cape Verde",
+  "Saudi Arabia":              "Saudi Arabia",
+  "Uruguay":                   "Uruguay",
+  "France":                    "France",
+  "Senegal":                   "Senegal",
+  "Iraq":                      "Iraq",
+  "Norway":                    "Norway",
+  "Argentina":                 "Argentina",
+  "Algeria":                   "Algeria",
+  "Austria":                   "Austria",
+  "Jordan":                    "Jordan",
+  "Portugal":                  "Portugal",
+  "DR Congo":                  "DR Congo",
+  "Congo DR":                  "DR Congo",
+  "Uzbekistan":                "Uzbekistan",
+  "Colombia":                  "Colombia",
+  "England":                   "England",
+  "Croatia":                   "Croatia",
+  "Ghana":                     "Ghana",
+  "Panama":                    "Panama",
 };
 
-// IMPORTANT: Group stage does NOT count as a "round reached" for fantasy points.
-// Rounds reached only counts knockout stage progression beyond the group phase.
-const STAGE_TO_ROUNDS = {
-  "GROUP_STAGE":    0,
-  "LAST_32":        1,
-  "LAST_16":        2,
-  "QUARTER_FINALS": 3,
-  "SEMI_FINALS":    4,
-  "THIRD_PLACE":    4, // doesn't add an extra round beyond semis
-  "FINAL":          5,
-};
-
+// Safe Firebase key (no special chars)
 function safeKey(name) {
   return name.replace(/[.#$[\]']/g, "_");
 }
 
-async function fetchMatches() {
-  const res = await fetch(
-    `https://api.football-data.org/v4/competitions/${COMPETITION_ID}/matches?status=FINISHED`,
-    { headers: { "X-Auth-Token": FOOTBALL_API_KEY } }
-  );
-  if (!res.ok) throw new Error(`football-data.org error: ${res.status} ${await res.text()}`);
-  const data = await res.json();
-  return data.matches || [];
+// ── HTTP helpers ─────────────────────────────────────────────
+function httpGet(url, headers = {}) {
+  return new Promise((resolve, reject) => {
+    https.get(url, { headers }, (res) => {
+      let data = "";
+      res.on("data", (chunk) => (data += chunk));
+      res.on("end", () => {
+        try { resolve(JSON.parse(data)); }
+        catch (e) { reject(new Error("JSON parse error: " + data.slice(0, 200))); }
+      });
+    }).on("error", reject);
+  });
 }
 
-function mappedName(apiName) {
-  return NAME_MAP[apiName] || apiName;
+function firebaseGet(path) {
+  const url = `${FIREBASE_DB_URL}/${path}.json?auth=${FIREBASE_SECRET}`;
+  return httpGet(url);
 }
 
-function blankStats() {
-  return {
-    wins: 0, draws: 0, redCards: 0,
-    goalsFor: 0, goalsAgainst: 0,
-    roundsReached: 0, semiFinal: 0, wonFinal: 0,
+function firebasePut(path, data) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify(data);
+    const urlObj = new URL(`${FIREBASE_DB_URL}/${path}.json?auth=${FIREBASE_SECRET}`);
+    const options = {
+      hostname: urlObj.hostname,
+      path: urlObj.pathname + urlObj.search,
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
+    };
+    const req = https.request(options, (res) => {
+      let d = "";
+      res.on("data", (c) => (d += c));
+      res.on("end", () => resolve(d));
+    });
+    req.on("error", reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+// ── Round reached mapping ─────────────────────────────────────
+// football-data.org stage names → rounds reached count
+// NOTE: Group stage does NOT count as a "round reached" for fantasy
+// points — that bonus only applies once a team progresses to the
+// knockout stages (Round of 32 onwards).
+function stageToRounds(stage) {
+  const map = {
+    "GROUP_STAGE":          0,
+    "LAST_32":              1,
+    "LAST_16":              2,
+    "QUARTER_FINALS":       3,
+    "SEMI_FINALS":          4,
+    "THIRD_PLACE":          4,
+    "FINAL":                5,
   };
+  return map[stage] || 0;
 }
 
-function computeTeamStats(matches) {
+// ── Main ─────────────────────────────────────────────────────
+async function main() {
+  console.log("🔄 Fetching all WC 2026 matches...");
+
+  // Get all matches
+  const matchData = await httpGet(
+    `https://api.football-data.org/v4/competitions/${WC_COMPETITION_ID}/matches`,
+    { "X-Auth-Token": FOOTBALL_API_KEY }
+  );
+
+  if (!matchData.matches) {
+    console.error("No matches found:", JSON.stringify(matchData).slice(0, 300));
+    process.exit(1);
+  }
+
+  console.log(`📊 Processing ${matchData.matches.length} matches...`);
+
+  // Build stats per team
   const stats = {};
 
-  for (const match of matches) {
-    const stage = match.stage;
-    const home = mappedName(match.homeTeam.name);
-    const away = mappedName(match.awayTeam.name);
-    const homeScore = match.score?.fullTime?.home ?? 0;
-    const awayScore = match.score?.fullTime?.away ?? 0;
+  function getStats(teamName) {
+    const key = safeKey(teamName);
+    if (!stats[key]) {
+      stats[key] = {
+        wins: 0, draws: 0, losses: 0,
+        goalsFor: 0, goalsAgainst: 0,
+        redCards: 0, roundsReached: 0,
+        semiFinal: 0, wonFinal: 0,
+        _name: teamName,
+      };
+    }
+    return stats[key];
+  }
 
-    if (!stats[home]) stats[home] = blankStats();
-    if (!stats[away]) stats[away] = blankStats();
+  // Track highest round reached per team
+  const highestRound = {};
 
-    // Goals
-    stats[home].goalsFor     += homeScore;
-    stats[home].goalsAgainst += awayScore;
-    stats[away].goalsFor     += awayScore;
-    stats[away].goalsAgainst += homeScore;
+  for (const match of matchData.matches) {
+    if (match.status !== "FINISHED") continue;
 
-    // Win / draw
-    if (homeScore > awayScore) {
-      stats[home].wins += 1;
-    } else if (awayScore > homeScore) {
-      stats[away].wins += 1;
-    } else {
-      stats[home].draws += 1;
-      stats[away].draws += 1;
+    const homeRaw = match.homeTeam?.name;
+    const awayRaw = match.awayTeam?.name;
+    const home = NAME_MAP[homeRaw];
+    const away = NAME_MAP[awayRaw];
+
+    if (!home || !away) {
+      console.warn(`⚠️  Unknown team: ${homeRaw} or ${awayRaw}`);
+      continue;
     }
 
-    // Rounds reached — only counts if the match itself is a knockout stage match
-    // (i.e. the team is confirmed to have REACHED that round by playing in it).
-    // Group stage matches contribute 0.
-    const roundsForThisStage = STAGE_TO_ROUNDS[stage] ?? 0;
-    stats[home].roundsReached = Math.max(stats[home].roundsReached, roundsForThisStage);
-    stats[away].roundsReached = Math.max(stats[away].roundsReached, roundsForThisStage);
+    const hGoals = match.score?.fullTime?.home ?? 0;
+    const aGoals = match.score?.fullTime?.away ?? 0;
+    const stage  = match.stage;
+    const rounds = stageToRounds(stage);
+
+    // Update highest round reached
+    highestRound[safeKey(home)] = Math.max(highestRound[safeKey(home)] || 0, rounds);
+    highestRound[safeKey(away)] = Math.max(highestRound[safeKey(away)] || 0, rounds);
+
+    const hStats = getStats(home);
+    const aStats = getStats(away);
+
+    // Goals
+    hStats.goalsFor     += hGoals;
+    hStats.goalsAgainst += aGoals;
+    aStats.goalsFor     += aGoals;
+    aStats.goalsAgainst += hGoals;
+
+    // Win/draw/loss (handle penalties for knockout rounds)
+    const hWin = match.score?.winner === "HOME_TEAM";
+    const aWin = match.score?.winner === "AWAY_TEAM";
+    const draw = match.score?.winner === "DRAW";
+
+    if (hWin) { hStats.wins++; aStats.losses = (aStats.losses||0) + 1; }
+    else if (aWin) { aStats.wins++; hStats.losses = (hStats.losses||0) + 1; }
+    else if (draw) { hStats.draws++; aStats.draws++; }
 
     // Semi-final win
     if (stage === "SEMI_FINALS") {
-      if (homeScore > awayScore) stats[home].semiFinal = 1;
-      if (awayScore > homeScore) stats[away].semiFinal = 1;
-      // Penalty shootout winner (if regular score level)
-      if (homeScore === awayScore && match.score?.penalties) {
-        const ph = match.score.penalties.home, pa = match.score.penalties.away;
-        if (ph > pa) stats[home].semiFinal = 1;
-        if (pa > ph) stats[away].semiFinal = 1;
-      }
+      if (hWin) hStats.semiFinal++;
+      if (aWin) aStats.semiFinal++;
     }
 
     // Final win
     if (stage === "FINAL") {
-      if (homeScore > awayScore) stats[home].wonFinal = 1;
-      if (awayScore > homeScore) stats[away].wonFinal = 1;
-      if (homeScore === awayScore && match.score?.penalties) {
-        const ph = match.score.penalties.home, pa = match.score.penalties.away;
-        if (ph > pa) stats[home].wonFinal = 1;
-        if (pa > ph) stats[away].wonFinal = 1;
-      }
-    }
-
-    // Red cards (if bookings data is available — not guaranteed on free tier)
-    if (match.bookings) {
-      for (const booking of match.bookings) {
-        if (booking.card === "RED") {
-          const teamName = mappedName(booking.team?.name || "");
-          if (stats[teamName]) stats[teamName].redCards += 1;
-        }
-      }
+      if (hWin) hStats.wonFinal++;
+      if (aWin) aStats.wonFinal++;
     }
   }
 
-  return stats;
-}
-
-async function getExistingTeamScores() {
-  const res = await fetch(`${FIREBASE_URL}/teamScores.json?auth=${FIREBASE_SECRET}`);
-  if (!res.ok) throw new Error(`Firebase read error: ${res.status}`);
-  return (await res.json()) || {};
-}
-
-async function writeTeamScores(teamScores) {
-  const res = await fetch(`${FIREBASE_URL}/teamScores.json?auth=${FIREBASE_SECRET}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(teamScores),
-  });
-  if (!res.ok) throw new Error(`Firebase write error: ${res.status} ${await res.text()}`);
-}
-
-async function main() {
-  console.log("Fetching finished matches…");
-  const matches = await fetchMatches();
-  console.log(`Found ${matches.length} finished matches.`);
-
-  const computed = computeTeamStats(matches);
-
-  console.log("Reading existing team scores (to preserve manual red-card edits)…");
-  const existing = await getExistingTeamScores();
-
-  const merged = {};
-  for (const [teamName, stats] of Object.entries(computed)) {
-    const key = safeKey(teamName);
-    const prev = existing[key] || {};
-    merged[key] = {
-      ...stats,
-      // Preserve any manually-entered red card count if the computed value is 0
-      // (red cards aren't reliably available from the free API tier).
-      redCards: stats.redCards > 0 ? stats.redCards : (prev.redCards || 0),
-    };
+  // Apply highest rounds reached
+  for (const [key, rounds] of Object.entries(highestRound)) {
+    if (stats[key]) stats[key].roundsReached = rounds;
   }
 
-  // Keep any teams that existed before but had no finished matches yet
-  for (const [key, stats] of Object.entries(existing)) {
-    if (!merged[key]) merged[key] = stats;
+  // Get red cards from match details (bookings)
+  for (const match of matchData.matches) {
+    if (match.status !== "FINISHED") continue;
+    const bookings = match.bookings || [];
+    for (const booking of bookings) {
+      if (booking.card === "RED_CARD" || booking.card === "YELLOW_RED_CARD") {
+        const teamRaw = booking.team?.name;
+        const team    = NAME_MAP[teamRaw];
+        if (team) getStats(team).redCards++;
+      }
+    }
   }
 
-  console.log("Writing updated team scores to Firebase…");
-  await writeTeamScores(merged);
-  console.log("Done!");
+  // Clean up internal fields before saving
+  for (const key of Object.keys(stats)) {
+    delete stats[key]._name;
+    delete stats[key].losses;
+  }
+
+  console.log(`✅ Computed stats for ${Object.keys(stats).length} teams`);
+  console.log("Sample:", JSON.stringify(Object.values(stats)[0], null, 2));
+
+  // Write to Firebase
+  console.log("🔥 Writing to Firebase...");
+  await firebasePut("teamScores", stats);
+  console.log("🏆 Done! Firebase updated.");
 }
 
-main().catch(err => {
-  console.error(err);
+main().catch((err) => {
+  console.error("❌ Error:", err.message);
   process.exit(1);
 });
