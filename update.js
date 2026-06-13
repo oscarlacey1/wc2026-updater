@@ -232,23 +232,26 @@ async function main() {
     if (stats[key]) stats[key].roundsReached = rounds;
   }
 
-  // Get red cards from match details (bookings)
-  for (const match of matchData.matches) {
-    if (match.status !== "FINISHED") continue;
-    const bookings = match.bookings || [];
-    for (const booking of bookings) {
-      if (booking.card === "RED_CARD" || booking.card === "YELLOW_RED_CARD") {
-        const teamRaw = booking.team?.name;
-        const team    = NAME_MAP[teamRaw];
-        if (team) getStats(team).redCards++;
-      }
-    }
+  // ── Red cards: never computed or modified by this script ───
+  // football-data.org doesn't reliably provide card data, so red
+  // cards are managed entirely via the Admin panel. This script
+  // simply carries over whatever value is already in Firebase.
+  console.log("📥 Reading existing team scores to preserve red cards...");
+  let existing = {};
+  try {
+    existing = (await firebaseGet("teamScores")) || {};
+  } catch (e) {
+    console.warn("⚠️  Could not read existing scores:", e.message);
   }
 
-  // Clean up internal fields before saving
   for (const key of Object.keys(stats)) {
-    delete stats[key]._name;
-    delete stats[key].losses;
+    stats[key].redCards = existing[key]?.redCards || 0;
+  }
+
+  // Also keep any teams that existed before but had no finished
+  // matches yet in this run (shouldn't normally happen, but safe).
+  for (const [key, prev] of Object.entries(existing)) {
+    if (!stats[key]) stats[key] = prev;
   }
 
   console.log(`✅ Computed stats for ${Object.keys(stats).length} teams`);
