@@ -23,6 +23,9 @@ const NAME_MAP = {
   "Canada":                    "Canada",
   "Bosnia and Herzegovina":    "Bosnia and H'",
   "Bosnia and H'":             "Bosnia and H'",
+  "Bosnia-Herzegovina":        "Bosnia and H'",
+  "Bosnia & Herzegovina":      "Bosnia and H'",
+  "Bosnia":                    "Bosnia and H'",
   "Qatar":                     "Qatar",
   "Switzerland":               "Switzerland",
   "Brazil":                    "Brazil",
@@ -53,6 +56,7 @@ const NAME_MAP = {
   "Spain":                     "Spain",
   "Cape Verde":                "Cape Verde",
   "Cabo Verde":                "Cape Verde",
+  "Cape Verde Islands":        "Cape Verde",
   "Saudi Arabia":              "Saudi Arabia",
   "Uruguay":                   "Uruguay",
   "France":                    "France",
@@ -77,6 +81,32 @@ const NAME_MAP = {
 // Safe Firebase key (no special chars)
 function safeKey(name) {
   return name.replace(/[.#$[\]']/g, "_");
+}
+
+// Fallback fuzzy matcher: strips punctuation/spacing differences so
+// API name variants (hyphens vs "and", "Islands" suffix, etc.) still
+// resolve correctly even if not explicitly listed in NAME_MAP.
+function normalize(str) {
+  return (str || "")
+    .toLowerCase()
+    .replace(/islands?/g, "")
+    .replace(/[^a-z]/g, "");
+}
+
+const NORMALIZED_LOOKUP = {};
+for (const [apiName, appName] of Object.entries(NAME_MAP)) {
+  NORMALIZED_LOOKUP[normalize(apiName)] = appName;
+}
+
+function resolveTeamName(rawName) {
+  if (!rawName) return null;
+  if (NAME_MAP[rawName]) return NAME_MAP[rawName];
+  const norm = normalize(rawName);
+  if (NORMALIZED_LOOKUP[norm]) return NORMALIZED_LOOKUP[norm];
+  // Try matching by "and"/"-"/"&" interchangeably for two-word countries
+  const withAnd = normalize(rawName.replace(/-/g, " and "));
+  if (NORMALIZED_LOOKUP[withAnd]) return NORMALIZED_LOOKUP[withAnd];
+  return null;
 }
 
 // ── HTTP helpers ─────────────────────────────────────────────
@@ -179,8 +209,8 @@ async function main() {
 
     const homeRaw = match.homeTeam?.name;
     const awayRaw = match.awayTeam?.name;
-    const home = NAME_MAP[homeRaw];
-    const away = NAME_MAP[awayRaw];
+    const home = resolveTeamName(homeRaw);
+    const away = resolveTeamName(awayRaw);
 
     if (!home || !away) {
       console.warn(`⚠️  Unknown team: ${homeRaw} or ${awayRaw}`);
