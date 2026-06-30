@@ -201,8 +201,22 @@ async function main() {
     return stats[key];
   }
 
-  // Track highest round reached per team
+  // Track highest round reached per team.
+  // We credit rounds for ANY match at a knockout stage (FINISHED,
+  // SCHEDULED, IN_PLAY etc.) so all 32 qualified teams immediately
+  // get their +10 once their Round of 32 fixture is scheduled,
+  // not only after they have played it.
   const highestRound = {};
+
+  for (const match of matchData.matches) {
+    const stageR = stageToRounds(match.stage);
+    if (stageR > 0) {
+      const h = resolveTeamName(match.homeTeam?.name);
+      const a = resolveTeamName(match.awayTeam?.name);
+      if (h) highestRound[safeKey(h)] = Math.max(highestRound[safeKey(h)] || 0, stageR);
+      if (a) highestRound[safeKey(a)] = Math.max(highestRound[safeKey(a)] || 0, stageR);
+    }
+  }
 
   for (const match of matchData.matches) {
     if (match.status !== "FINISHED") continue;
@@ -221,10 +235,6 @@ async function main() {
     const aGoals = match.score?.fullTime?.away ?? 0;
     const stage  = match.stage;
     const rounds = stageToRounds(stage);
-
-    // Update highest round reached
-    highestRound[safeKey(home)] = Math.max(highestRound[safeKey(home)] || 0, rounds);
-    highestRound[safeKey(away)] = Math.max(highestRound[safeKey(away)] || 0, rounds);
 
     const hStats = getStats(home);
     const aStats = getStats(away);
@@ -275,7 +285,14 @@ async function main() {
   }
 
   for (const key of Object.keys(stats)) {
+    // Never wipe red cards — managed manually via Admin
     stats[key].redCards = existing[key]?.redCards || 0;
+    // Never wipe rounds reached — take the highest value between
+    // what the API computed and what is already stored in Firebase.
+    stats[key].roundsReached = Math.max(
+      stats[key].roundsReached || 0,
+      existing[key]?.roundsReached || 0
+    );
   }
 
   // Also keep any teams that existed before but had no finished
